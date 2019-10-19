@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.bootcss.com/jshashes/1.0.7/hashes.min.js"></script>
+  <script src="https://cdn.bootcss.com/jsSHA/2.3.1/sha1.js"></script>
+  <script src="spark-md5.js"></script>
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <style>
+    html,body {
+      padding: 0;
+      margin: 0;
+      background: rgb(115, 209, 233);
+    }
+
+    .container {
+      margin-top: 400px;
+      height: 80px;
+      width: 100%;
+    }
+
+    .input {
+      position: absolute;
+      top: -200px;
+      right: -200px;
+    }
+    .label {
+      display:block;
+      height: 50px;
+      width: 100px;
+      margin: auto;
+      border: 1px solid #bbb;
+      background: #fdfdfd;
+      border-radius: 8px;
+      text-align: center;
+      line-height: 50px;
+      cursor: pointer;
+    }
+    .label:hover {
+      box-shadow: 0 0 11px rgba(0,0,0,0.4);
+    }
+    .console {
+      display: inline-block;
+      border-radius: 5px;
+      font-size: 0;
+      overflow: hidden;
+    }
+    .console > span {
+      display: inline;
+      padding: 4px 8px;
+      font-size: 20px;
+    }
+    .console :nth-child(1) {
+      background: #666;
+    }
+    .console :nth-child(2) {
+      background: #008000;
+    }
+  </style>
+  <title>Document</title>
+</head>
+<body>
+  <form class="container">
+      <input class="input" type="file" id="video" name="video" accept="*">
+      <label class="label" for="video">上传视频</label>
+  </form>
+  <div class="console">
+    <span>Enviroment</span>
+    <span>production</span>
+  </div>
+</body>
+<script type="text/javascript">
+  var spark = new SparkMD5.ArrayBuffer();
+  let fileElement = document.getElementById('video');
+  fileElement.addEventListener('change', function(event) {
+    var upload = new Upload(this.files[0], this.name);
+    upload.on('error', function(e) {
+      console.log(e);
+    })
+    upload.start();
+  });
+
+  class Upload {
+    constructor(element, name, piece) {
+      this.dataArray = [];
+      this.fileMessage = fileMessage;
+      this.isFirstUpLoad = true;
+      this.pointer = 0;
+      this.inputElementName = name || element.name;
+      this.tryTimes = 3;
+      this.fail = false;
+      this.piece = piece || 1024 * 1024 * 1;
+      this.pieceCount = 0;
+      this.target = new EventTarget();
+      this.xhr = new XMLHttpRequest();
+      this.init(element);
+    }
+
+    init(element) {
+      let that = this;
+      element.addEventListener('change', function(e) {
+        this.fileMessage = this.files[0];
+        that.start();
+      })
+    }
+
+    start() {
+      this.slice();
+      this.xhr.open("post", "/upload");
+      this.xhr.setRequestHeader("Content-Type", "application/json");
+      let obj = {};
+      obj.name = this.fileMessage.name;
+      obj.totalSize = this.fileMessage.size;
+      obj.pieceCount = this.pieceCount;
+      this.xhr.send(JSON.stringify(obj));
+      this.xhr.onreadystatechange = this.uploadFile();
+    }
+
+    uploadFile() {
+      let that = this;
+      this.xhr.onload = function() {
+        let rtcode = JSON.parse(that.xhr.responseText).code
+        if(rtcode === 1) {
+          that.target.dispatchEvent(new CustomEvent(
+            'success', {detail: '上传成功'}
+          ))
+          that.xhr.abort();
+          return;
+        }
+        if (rtcode !== 3) {
+          that.pointer++;
+        }
+        that.send();
+        that.target.dispatchEvent(
+          new CustomEvent(
+            'progress', 
+            {detail: Math.round(that.pointer / that.pieceCount * 100)}
+          )
+        )
+        if (that.fail) {
+          that.fail = false;
+        }
+      }
+      this.xhr.onerror = function(event) {
+        if (that.fail) {
+          if (that.tryTimes) {
+            that.tryTimes--;
+            that.send();
+          } else {
+            console.log(event);
+            that.returnWithError(event);
+            return;
+          }
+        } else {
+          that.fail = true;
+          that.tryTimes--;
+          that.send();
+        }
+      }
+    };
+
+    send() {
+      this.xhr.abort();
+      this.xhr = new XMLHttpRequest();
+      this.xhr.open("post", "/upload", true);
+      let formData = new FormData();
+      formData.append(this.inputElementName, this.dataArray[this.pointer]);
+      var reader = new FileReader();
+
+      reader.readAsArrayBuffer(this.dataArray[this.pointer]);
+      var that = this;
+      reader.onload = function() {
+        var buffer = reader.result;
+        console.log(buffer);
+        spark.append(buffer);
+        formData.append('hash', spark.end());
+        that.xhr.send(formData);
+        that.xhr.onreadystatechange = that.uploadFile();
+        spark.reset();
+      }
+    }
+
+    returnWithError(event) {
+      let objError = {
+        filename: this.fileMessage.name,
+        uploaded_size: this.piece * (this.pointer - 0),
+        error_message: event,
+        chunk_size: this.dataArray.length,
+      }
+
+      this.target.dispatchEvent(
+        new CustomEvent("error", {detail: objError})
+      );
+      this.xhr.abort();
+      return;
+    }
+
+    slice() {
+      let file = this.fileMessage;
+      let piece = this.piece;
+      if (file.size === 0) {
+        return {
+          code: 0
+        }
+      }
+      for (let i = 0; i < file.size; i += piece) {
+        this.dataArray.push(file.slice(i, i+piece));
+      }
+      this.pieceCount = this.dataArray.length;
+      console.log(this.dataArray);
+    }
+    on(type, handle) {
+      switch(type) {
+        case 'error':
+          this.target.addEventListener("error", (e) => handle(e.detail));
+        case 'progress':
+          this.target.addEventListener('progress', (e) => handle(e.detail));
+        case 'end':
+          this.target.addEventListener('end', (e) => handle(e.detail));
+        case 'success':
+          this.target.addEventListener('success', (e) => handle(e.detail));
+      }
+    }
+  }
+</script>
+</html>
